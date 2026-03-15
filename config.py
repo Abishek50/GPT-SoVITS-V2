@@ -4,14 +4,14 @@ import torch
 
 
 # koboldcpp 接入大模型时指定的音频地址、音频文本以及音频语言类型
-llama_audio = "./参考音频/[jok老师]说得好像您带我以来我考好过几次一样.wav"
-llama_text = "说得好像您带我以来我考好过几次一样"
-llama_lang = "zh"
-llama_prompt_lang = "zh"
+llama_audio = ""
+llama_text = ""
+llama_lang = ""
+llama_prompt_lang = ""
 
 # 推理用的指定模型
-sovits_path = ""
-gpt_path = ""
+sovits_path = "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s2G2333k.pth"
+gpt_path = "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt"
 is_half_str = os.environ.get("is_half", "True")
 is_half = True if is_half_str.lower() == 'true' else False
 is_share_str = os.environ.get("is_share","False")
