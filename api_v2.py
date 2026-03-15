@@ -181,7 +181,7 @@ class TTS_Request(BaseModel):
     fragment_interval:float = 0.3
     seed:int = -1
     media_type:str = "wav"
-    streaming_mode:bool = False
+    streaming_mode:bool = True
     parallel_infer:bool = True
     repetition_penalty:float = 1.35
 
@@ -222,6 +222,23 @@ def pack_aac(io_buffer:BytesIO, data:np.ndarray, rate:int):
     out, _ = process.communicate(input=data.tobytes())
     io_buffer.write(out)
     return io_buffer
+    
+def pack_webm(io_buffer:BytesIO, data:np.ndarray, rate:int):
+    process = subprocess.Popen([
+        'ffmpeg',
+        '-f', 's16le',
+        '-ar', str(rate),
+        '-ac', '1',
+        '-i', 'pipe:0',
+        '-c:a', 'libopus',
+        '-b:a', '96k',
+        '-vn',
+        '-f', 'webm',
+        'pipe:1'
+    ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, _ = process.communicate(input=data.tobytes())
+    io_buffer.write(out)
+    return io_buffer
 
 def pack_audio(io_buffer:BytesIO, data:np.ndarray, rate:int, media_type:str):
     if media_type == "ogg":
@@ -230,6 +247,8 @@ def pack_audio(io_buffer:BytesIO, data:np.ndarray, rate:int, media_type:str):
         io_buffer = pack_aac(io_buffer, data, rate)
     elif media_type == "wav":
         io_buffer = pack_wav(io_buffer, data, rate)
+    elif media_type == "webm":      # ADD THIS
+        io_buffer = pack_webm(io_buffer, data, rate)
     else:
         io_buffer = pack_raw(io_buffer, data, rate)
     io_buffer.seek(0)
@@ -265,7 +284,7 @@ def check_params(req:dict):
     text:str = req.get("text", "")
     text_lang:str = req.get("text_lang", "")
     ref_audio_path:str = req.get("ref_audio_path", "")
-    streaming_mode:bool = req.get("streaming_mode", False)
+    streaming_mode:bool = req.get("streaming_mode", True)
     media_type:str = req.get("media_type", "wav")
     prompt_lang:str = req.get("prompt_lang", "")
     text_split_method:str = req.get("text_split_method", "cut5")
@@ -282,7 +301,7 @@ def check_params(req:dict):
         return JSONResponse(status_code=400, content={"message": "prompt_lang is required"})
     elif prompt_lang.lower() not in tts_config.languages:
         return JSONResponse(status_code=400, content={"message": f"prompt_lang: {prompt_lang} is not supported in version {tts_config.version}"})
-    if media_type not in ["wav", "raw", "ogg", "aac"]:
+    if media_type not in ["wav", "raw", "ogg", "aac", "webm"]:
         return JSONResponse(status_code=400, content={"message": f"media_type: {media_type} is not supported"})
     elif media_type == "ogg" and  not streaming_mode:
         return JSONResponse(status_code=400, content={"message": "ogg format is not supported in non-streaming mode"})
@@ -324,7 +343,7 @@ async def tts_handle(req:dict):
         StreamingResponse: audio stream response.
     """
     
-    streaming_mode = req.get("streaming_mode", False)
+    streaming_mode = req.get("streaming_mode", True)
     return_fragment = req.get("return_fragment", False)
     media_type = req.get("media_type", "wav")
 
@@ -340,14 +359,52 @@ async def tts_handle(req:dict):
 
         if streaming_mode:
             def streaming_generator(tts_generator: Generator, media_type: str):
-                if media_type == "wav":
+                if media_type == "webm":
+                    import threading
+                    # Peek at first chunk to get sample rate
+                    first_sr, first_chunk = next(tts_generator)
+
+                    process = subprocess.Popen([
+                        'ffmpeg',
+                        '-f', 's16le',
+                        '-ar', str(first_sr),
+                        '-ac', '1',
+                        '-i', 'pipe:0',
+                        '-c:a', 'libopus',
+                        '-b:a', '96k',
+                        '-vn',
+                        '-f', 'webm',
+                        'pipe:1'
+                    ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+                    def feed_input():
+                        process.stdin.write(first_chunk.astype(np.int16).tobytes())
+                        for sr, chunk in tts_generator:
+                            process.stdin.write(chunk.astype(np.int16).tobytes())
+                        process.stdin.close()
+
+                    t = threading.Thread(target=feed_input)
+                    t.start()
+
+                    while True:
+                        data = process.stdout.read(4096)
+                        if not data:
+                            break
+                        yield data
+
+                    t.join()
+
+                elif media_type == "wav":
                     yield wave_header_chunk()
                     media_type = "raw"
-                for sr, chunk in tts_generator:
-                    yield pack_audio(BytesIO(), chunk, sr, media_type).getvalue()
-            
+                    for sr, chunk in tts_generator:
+                        yield pack_audio(BytesIO(), chunk, sr, media_type).getvalue()
+                else:
+                    for sr, chunk in tts_generator:
+                        yield pack_audio(BytesIO(), chunk, sr, media_type).getvalue()
+
             return StreamingResponse(
-                streaming_generator(tts_generator, media_type), 
+                streaming_generator(tts_generator, media_type),
                 media_type=f"audio/{media_type}"
             )
         else:
@@ -402,7 +459,7 @@ async def tts_handle_srt(req:dict,request):
         StreamingResponse: audio stream response.
     """
     
-    streaming_mode = req.get("streaming_mode", False)
+    streaming_mode = req.get("streaming_mode", True)
     media_type = req.get("media_type", "wav")
 
     check_res = check_params(req)
@@ -451,7 +508,7 @@ async def tts_get_endpoint_srt(request: Request,
                         fragment_interval:float = 0.3,
                         seed:int = -1,
                         media_type:str = "wav",
-                        streaming_mode:bool = False,
+                        streaming_mode:bool = True,
                         parallel_infer:bool = True,
                         repetition_penalty:float = 1.35
                         ):
@@ -504,7 +561,7 @@ async def tts_get_endpoint(
                         fragment_interval:float = 0.3,
                         seed:int = -1,
                         media_type:str = "wav",
-                        streaming_mode:bool = False,
+                        streaming_mode:bool = True,
                         parallel_infer:bool = True,
                         repetition_penalty:float = 1.35
                         ):
@@ -557,7 +614,7 @@ async def tts_get_endpoint(
                         fragment_interval:float = 0.3,
                         seed:int = -1,
                         media_type:str = "wav",
-                        streaming_mode:bool = False,
+                        streaming_mode:bool = True,
                         parallel_infer:bool = True,
                         repetition_penalty:float = 1.35
                         ):
